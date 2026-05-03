@@ -1,0 +1,51 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  
+  --color-brand-bg: #0f172a;
+  --color-brand-card: #1e293b;
+  --color-brand-accent: #2563eb;
+  --color-brand-text: #ffffff;
+  --color-brand-muted: #94a3b8;
+}
+
+@layer base {
+  body {
+    @apply bg-brand-bg text-brand-text font-sans antialiased;
+  }
+}
+
+.glass-card {
+  @apply bg-brand-card/50 backdrop-blur-md border border-white/10 rounded-2xl;
+}
+
+.btn-primary {
+  @apply bg-brand-accent hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-xl transition-all active:scale-95 disabled:opacity-50;
+}
+
+.btn-secondary {
+  @apply bg-white/10 hover:bg-white/20 text-white font-semibold py-2 px-4 rounded-xl transition-all active:scale-95;
+}
+
+.input-field {
+  @apply bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-white focus:outline-none focus:ring-2 focus:ring-brand-accent/50 transition-all placeholder:text-white/30;
+}
+
+.markdown-body {
+  @apply text-brand-muted leading-relaxed;
+}
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  @apply text-white font-bold mb-4;
+}
+
+.markdown-body p {
+  @apply mb-4;
+}
+
+.markdown-body ul {
+  @apply list-disc list-inside mb-4;
+}

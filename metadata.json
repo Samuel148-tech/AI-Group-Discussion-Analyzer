@@ -1,0 +1,7 @@
+{
+  "name": "AI Group Discussion Analyzer",
+  "description": "A real-time platform for analyzing group discussions using AI-powered NLP, sentiment analysis, and participation metrics.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
