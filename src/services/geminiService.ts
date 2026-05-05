@@ -1,15 +1,11 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { AnalysisResult, SessionConfig, TranscriptSegment, Participant, SessionMetrics } from "../types";
 
-const apiKey = process.env.GEMINI_API_KEY || "";
-if (!apiKey) {
-  console.warn("GEMINI_API_KEY is missing. AI features will not work.");
-}
-const ai = new GoogleGenAI({ apiKey });
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export async function generateAudio(text: string, voiceName: string): Promise<string> {
   const trimmedText = text.trim();
-  if (!trimmedText || !apiKey) return "";
+  if (!trimmedText) return "";
 
   let attempts = 0;
   const maxAttempts = 2;
@@ -17,7 +13,7 @@ export async function generateAudio(text: string, voiceName: string): Promise<st
   while (attempts < maxAttempts) {
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash-exp",
+        model: "gemini-2.5-flash-preview-tts",
         contents: [{ parts: [{ text: trimmedText }] }],
         config: {
           responseModalities: [Modality.AUDIO],
@@ -65,7 +61,7 @@ export async function generateAudio(text: string, voiceName: string): Promise<st
 
 export async function analyzeTranscript(text: string, topic: string, title?: string): Promise<AnalysisResult> {
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-3-flash-preview",
     contents: `Analyze the following transcript excerpt from a group discussion titled "${title || topic}" about the topic "${topic}".
     Transcript: "${text}"`,
     config: {
@@ -103,21 +99,13 @@ export async function analyzeTranscript(text: string, topic: string, title?: str
     }
   });
 
-  try {
-    const text = response.text || "{}";
-    // Remove markdown code blocks if present
-    const cleanText = text.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-    return JSON.parse(cleanText);
-  } catch (e) {
-    console.error("Failed to parse analysis JSON", e, response.text);
-    throw new Error("Invalid analysis response format");
-  }
+  return JSON.parse(response.text || "{}");
 }
 
 export async function getAIParticipantResponse(context: string, topic: string, botName: string = "AI Participant"): Promise<string> {
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+      model: "gemini-3-flash-preview",
       contents: `You are "${botName}", an AI participant in a group discussion about "${topic}". 
       The discussion context is: "${context}"
       
@@ -144,7 +132,7 @@ export async function getAIParticipantResponse(context: string, topic: string, b
 
 export async function analyzeSentiment(text: string): Promise<'Positive' | 'Neutral' | 'Negative'> {
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-3-flash-preview",
     contents: `Analyze the sentiment of this text and return ONLY one word: Positive, Neutral, or Negative.\nText: "${text}"`,
   });
   
@@ -186,7 +174,7 @@ export async function analyzeSessionMetrics(
   `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-3-flash-preview",
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -228,9 +216,7 @@ export async function analyzeSessionMetrics(
   });
 
   try {
-    const text = response.text || "{}";
-    const cleanText = text.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-    const data = JSON.parse(cleanText);
+    const data = JSON.parse(response.text || '{}');
     
     // Map participant names back to IDs
     const mappedParticipantMetrics: Record<string, any> = {};
@@ -278,7 +264,7 @@ export async function generateAIResponse(
   `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-1.5-flash",
+    model: "gemini-3-flash-preview",
     contents: prompt,
   });
 
