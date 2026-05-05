@@ -15,29 +15,47 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const isMySQL = !!(process.env.MYSQL_URL || process.env.DATABASE_URL || process.env.MYSQLHOST);
-
+let isMySQL = !!(process.env.MYSQL_URL || process.env.DATABASE_URL || process.env.MYSQLHOST);
 let db: any;
 let pool: mysql.Pool | null = null;
 
-if (isMySQL) {
-  const connectionString = process.env.MYSQL_URL || process.env.DATABASE_URL;
-  if (connectionString) {
-    pool = mysql.createPool(connectionString);
-  } else {
-    pool = mysql.createPool({
-      host: process.env.MYSQLHOST,
-      user: process.env.MYSQLUSER,
-      password: process.env.MYSQLPASSWORD,
-      database: process.env.MYSQLDATABASE,
-      port: parseInt(process.env.MYSQLPORT || "3306"),
-    });
+async function setupDatabase() {
+  if (isMySQL) {
+    try {
+      const connectionString = process.env.MYSQL_URL || process.env.DATABASE_URL;
+      if (connectionString) {
+        pool = mysql.createPool(connectionString);
+      } else {
+        pool = mysql.createPool({
+          host: process.env.MYSQLHOST,
+          user: process.env.MYSQLUSER,
+          password: process.env.MYSQLPASSWORD,
+          database: process.env.MYSQLDATABASE,
+          port: parseInt(process.env.MYSQLPORT || "3306"),
+          connectTimeout: 5000,
+        });
+      }
+      
+      // Test the connection
+      await pool.query("SELECT 1");
+      console.log("Successfully connected to MySQL database");
+    } catch (err) {
+      console.error("Failed to connect to MySQL, falling back to SQLite:", err instanceof Error ? err.message : String(err));
+      isMySQL = false;
+      if (pool) {
+        await pool.end();
+        pool = null;
+      }
+    }
   }
-  console.log("Using MySQL database");
-} else {
-  db = new Database("discussion.db");
-  db.exec("PRAGMA foreign_keys = ON");
-  console.log("Using SQLite database");
+
+  if (!isMySQL) {
+    db = new Database("discussion.db");
+    db.exec("PRAGMA foreign_keys = ON");
+    console.log("Using SQLite database");
+  }
+
+  await initDb();
 }
 
 const dbQuery = {
@@ -126,7 +144,7 @@ const initDb = async () => {
   await dbQuery.exec(schema);
 };
 
-await initDb();
+await setupDatabase();
 
 async function startServer() {
   const app = express();
@@ -423,5 +441,14 @@ async function startServer() {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
+
+// Add global error handlers to prevent crashing
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
 
 startServer();
