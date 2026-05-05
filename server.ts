@@ -7,7 +7,6 @@ import { fileURLToPath } from "url";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import Database from "better-sqlite3";
-import mysql from "mysql2/promise";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -15,136 +14,59 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-let isMySQL = !!(process.env.MYSQL_URL || process.env.DATABASE_URL || process.env.MYSQLHOST);
-let db: any;
-let pool: mysql.Pool | null = null;
-
-async function setupDatabase() {
-  if (isMySQL) {
-    try {
-      const connectionString = process.env.MYSQL_URL || process.env.DATABASE_URL;
-      if (connectionString) {
-        pool = mysql.createPool(connectionString);
-      } else {
-        pool = mysql.createPool({
-          host: process.env.MYSQLHOST,
-          user: process.env.MYSQLUSER,
-          password: process.env.MYSQLPASSWORD,
-          database: process.env.MYSQLDATABASE,
-          port: parseInt(process.env.MYSQLPORT || "3306"),
-          connectTimeout: 5000,
-        });
-      }
-      
-      // Test the connection
-      await pool.query("SELECT 1");
-      console.log("Successfully connected to MySQL database");
-    } catch (err) {
-      console.error("Failed to connect to MySQL, falling back to SQLite:", err instanceof Error ? err.message : String(err));
-      isMySQL = false;
-      if (pool) {
-        await pool.end();
-        pool = null;
-      }
-    }
-  }
-
-  if (!isMySQL) {
-    db = new Database("discussion.db");
-    db.exec("PRAGMA foreign_keys = ON");
-    console.log("Using SQLite database");
-  }
-
-  await initDb();
-}
-
-const dbQuery = {
-  get: async (sql: string, params: any[] = []) => {
-    if (isMySQL && pool) {
-      const [rows]: any = await pool.execute(sql, params);
-      return rows[0];
-    }
-    return db.prepare(sql).get(...params);
-  },
-  all: async (sql: string, params: any[] = []) => {
-    if (isMySQL && pool) {
-      const [rows]: any = await pool.execute(sql, params);
-      return rows;
-    }
-    return db.prepare(sql).all(...params);
-  },
-  run: async (sql: string, params: any[] = []) => {
-    if (isMySQL && pool) {
-      const [result]: any = await pool.execute(sql, params);
-      return { lastInsertRowid: result.insertId, changes: result.affectedRows };
-    }
-    const info = db.prepare(sql).run(...params);
-    return { lastInsertRowid: info.lastInsertRowid, changes: info.changes };
-  },
-  exec: async (sql: string) => {
-    if (isMySQL && pool) {
-      // Basic split for setup script, MySQL pool.execute doesn't support multiple statements by default
-      const statements = sql.split(';').filter(s => s.trim());
-      for (const statement of statements) {
-        await pool.execute(statement);
-      }
-    } else {
-      db.exec(sql);
-    }
-  }
-};
-
+const db = new Database("discussion.db");
+db.exec("PRAGMA foreign_keys = ON");
 const JWT_SECRET = process.env.JWT_SECRET || "super-secret-key";
 
-// Initialize DB (Modified for MySQL compatibility)
-const initDb = async () => {
-  const schema = `
-    CREATE TABLE IF NOT EXISTS users (
-      id ${isMySQL ? 'INT AUTO_INCREMENT' : 'INTEGER'} PRIMARY KEY ${isMySQL ? '' : 'AUTOINCREMENT'},
-      username VARCHAR(255) UNIQUE,
-      password TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+// Initialize DB
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 
-    CREATE TABLE IF NOT EXISTS sessions (
-      id VARCHAR(255) PRIMARY KEY,
-      topic TEXT,
-      title TEXT,
-      description TEXT,
-      date TEXT,
-      time TEXT,
-      duration INTEGER,
-      real_users_count INTEGER,
-      ai_participants_count INTEGER,
-      language TEXT,
-      difficulty TEXT,
-      created_by INT,
-      status VARCHAR(50) DEFAULT 'active',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+  CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    topic TEXT,
+    title TEXT,
+    description TEXT,
+    date TEXT,
+    time TEXT,
+    duration INTEGER,
+    real_users_count INTEGER,
+    ai_participants_count INTEGER,
+    language TEXT,
+    difficulty TEXT,
+    created_by INTEGER,
+    status TEXT DEFAULT 'active',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE CASCADE
+  );
 
-    CREATE TABLE IF NOT EXISTS transcripts (
-      id ${isMySQL ? 'INT AUTO_INCREMENT' : 'INTEGER'} PRIMARY KEY ${isMySQL ? '' : 'AUTOINCREMENT'},
-      session_id VARCHAR(255),
-      user_id INT,
-      username VARCHAR(255),
-      text TEXT,
-      sentiment VARCHAR(50),
-      timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+  CREATE TABLE IF NOT EXISTS transcripts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    user_id INTEGER,
+    username TEXT,
+    text TEXT,
+    sentiment TEXT,
+    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
 
-    CREATE TABLE IF NOT EXISTS reports (
-      id ${isMySQL ? 'INT AUTO_INCREMENT' : 'INTEGER'} PRIMARY KEY ${isMySQL ? '' : 'AUTOINCREMENT'},
-      session_id VARCHAR(255) UNIQUE,
-      user_id INT,
-      analysis_json TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-  `;
-  await dbQuery.exec(schema);
-};
-
-await setupDatabase();
+  CREATE TABLE IF NOT EXISTS reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT UNIQUE,
+    user_id INTEGER,
+    analysis_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
 
 async function startServer() {
   const app = express();
@@ -154,12 +76,12 @@ async function startServer() {
   app.use(express.json());
 
   // Auth Middleware
-  const authenticate = async (req: any, res: any, next: any) => {
+  const authenticate = (req: any, res: any, next: any) => {
     const token = req.headers.authorization?.split(" ")[1];
     if (!token) return res.status(401).json({ error: "Unauthorized" });
     try {
       const decoded: any = jwt.verify(token, JWT_SECRET);
-      const user = await dbQuery.get("SELECT id, username FROM users WHERE id = ?", [decoded.id]);
+      const user = db.prepare("SELECT id, username FROM users WHERE id = ?").get(decoded.id);
       if (!user) {
         return res.status(401).json({ error: "User no longer exists" });
       }
@@ -175,18 +97,17 @@ async function startServer() {
     const { username, password } = req.body;
     try {
       const hashedPassword = await bcrypt.hash(password, 10);
-      const info = await dbQuery.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hashedPassword]);
+      const info = db.prepare("INSERT INTO users (username, password) VALUES (?, ?)").run(username, hashedPassword);
       const token = jwt.sign({ id: info.lastInsertRowid, username }, JWT_SECRET);
       res.json({ token, user: { id: info.lastInsertRowid, username } });
     } catch (err) {
-      console.error("Register error:", err);
-      res.status(400).json({ error: "Username already exists or database error" });
+      res.status(400).json({ error: "Username already exists" });
     }
   });
 
   app.post("/api/auth/login", async (req, res) => {
     const { username, password } = req.body;
-    const user: any = await dbQuery.get("SELECT * FROM users WHERE username = ?", [username]);
+    const user: any = db.prepare("SELECT * FROM users WHERE username = ?").get(username);
     if (user && await bcrypt.compare(password, user.password)) {
       const token = jwt.sign({ id: user.id, username }, JWT_SECRET);
       res.json({ token, user: { id: user.id, username } });
@@ -196,7 +117,7 @@ async function startServer() {
   });
 
   // Session Routes
-  app.post("/api/sessions", authenticate, async (req: any, res) => {
+  app.post("/api/sessions", authenticate, (req: any, res) => {
     const { 
       topic, title, description, date, time, duration, 
       realUsersCount, aiParticipantsCount, language, difficulty 
@@ -205,15 +126,15 @@ async function startServer() {
     const userId = req.user.id;
     const sessionId = Math.random().toString(36).substring(2, 10);
     try {
-      await dbQuery.run(`
+      db.prepare(`
         INSERT INTO sessions (
           id, topic, title, description, date, time, duration, 
           real_users_count, ai_participants_count, language, difficulty, created_by
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `, [
+      `).run(
         sessionId, topic, title, description, date, time, duration, 
         realUsersCount, aiParticipantsCount, language, difficulty, userId
-      ]);
+      );
       res.json({ 
         id: sessionId, topic, title, description, date, time, duration, 
         realUsersCount, aiParticipantsCount, language, difficulty,
@@ -227,15 +148,15 @@ async function startServer() {
     }
   });
 
-  app.get("/api/sessions", authenticate, async (req: any, res) => {
+  app.get("/api/sessions", authenticate, (req: any, res) => {
     const userId = req.user.id;
-    const sessions = await dbQuery.all(`
+    const sessions = db.prepare(`
       SELECT s.*, r.analysis_json 
       FROM sessions s 
       LEFT JOIN reports r ON s.id = r.session_id 
       WHERE s.created_by = ? 
       ORDER BY s.created_at DESC
-    `, [userId]);
+    `).all(userId);
     
     // Parse analysis_json for each session
     const sessionsWithReports = sessions.map((s: any) => ({
@@ -246,60 +167,48 @@ async function startServer() {
     res.json(sessionsWithReports);
   });
 
-  app.get("/api/sessions/:id", authenticate, async (req, res) => {
-    const session = await dbQuery.get("SELECT * FROM sessions WHERE id = ?", [req.params.id]);
+  app.get("/api/sessions/:id", authenticate, (req, res) => {
+    const session = db.prepare("SELECT * FROM sessions WHERE id = ?").get(req.params.id);
     if (!session) return res.status(404).json({ error: "Session not found" });
     res.json(session);
   });
 
-  app.get("/api/sessions/:id/transcripts", authenticate, async (req, res) => {
-    const transcripts = await dbQuery.all("SELECT * FROM transcripts WHERE session_id = ? ORDER BY timestamp ASC", [req.params.id]);
+  app.get("/api/sessions/:id/transcripts", authenticate, (req, res) => {
+    const transcripts = db.prepare("SELECT * FROM transcripts WHERE session_id = ? ORDER BY timestamp ASC").all(req.params.id);
     res.json(transcripts);
   });
 
-  app.delete("/api/sessions/:id", authenticate, async (req, res) => {
-    try {
-      // In a real production app with MySQL, you'd use a transaction here.
-      // For simplicity in this demo, we'll run them sequentially.
-      await dbQuery.run("DELETE FROM reports WHERE session_id = ?", [req.params.id]);
-      await dbQuery.run("DELETE FROM transcripts WHERE session_id = ?", [req.params.id]);
-      await dbQuery.run("DELETE FROM sessions WHERE id = ? AND created_by = ?", [req.params.id, (req as any).user.id]);
-      res.json({ success: true });
-    } catch (err) {
-      console.error("Delete session error:", err);
-      res.status(500).json({ error: "Failed to delete session" });
-    }
+  app.delete("/api/sessions/:id", authenticate, (req, res) => {
+    db.transaction(() => {
+      db.prepare("DELETE FROM reports WHERE session_id = ?").run(req.params.id);
+      db.prepare("DELETE FROM transcripts WHERE session_id = ?").run(req.params.id);
+      db.prepare("DELETE FROM sessions WHERE id = ? AND created_by = ?").run(req.params.id, (req as any).user.id);
+    })();
+    res.json({ success: true });
   });
 
-  app.get("/api/sessions/:id/report", authenticate, async (req, res) => {
-    const report = await dbQuery.get("SELECT * FROM reports WHERE session_id = ?", [req.params.id]);
+  app.get("/api/sessions/:id/report", authenticate, (req, res) => {
+    const report = db.prepare("SELECT * FROM reports WHERE session_id = ?").get(req.params.id);
     res.json(report ? JSON.parse(report.analysis_json) : null);
   });
 
-  app.post("/api/sessions/:id/report", authenticate, async (req, res) => {
+  app.post("/api/sessions/:id/report", authenticate, (req, res) => {
     const { analysis } = req.body;
     try {
-      const session = await dbQuery.get("SELECT 1 FROM sessions WHERE id = ?", [req.params.id]);
-      if (!session) throw new Error("Session not found");
+      db.transaction(() => {
+        const session = db.prepare("SELECT 1 FROM sessions WHERE id = ?").get(req.params.id);
+        if (!session) throw new Error("Session not found");
 
-      const userExists = await dbQuery.get("SELECT 1 FROM users WHERE id = ?", [(req as any).user.id]);
-      if (!userExists) throw new Error("User not found");
+        // Ensure user exists before inserting report to avoid FK failure
+        const userExists = db.prepare("SELECT 1 FROM users WHERE id = ?").get((req as any).user.id);
+        if (!userExists) throw new Error("User not found");
 
-      // MySQL equivalent of INSERT OR REPLACE is slightly different, but since we have a UNIQUE constraint on session_id:
-      if (isMySQL) {
-        await dbQuery.run(
-          "INSERT INTO reports (session_id, user_id, analysis_json) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE analysis_json = VALUES(analysis_json)",
-          [req.params.id, (req as any).user.id, JSON.stringify(analysis)]
-        );
-      } else {
-        await dbQuery.run("INSERT OR REPLACE INTO reports (session_id, user_id, analysis_json) VALUES (?, ?, ?)", 
-          [req.params.id, (req as any).user.id, JSON.stringify(analysis)]);
-      }
-      
-      await dbQuery.run("UPDATE sessions SET status = 'completed' WHERE id = ?", [req.params.id]);
+        db.prepare("INSERT OR REPLACE INTO reports (session_id, user_id, analysis_json) VALUES (?, ?, ?)")
+          .run(req.params.id, (req as any).user.id, JSON.stringify(analysis));
+        db.prepare("UPDATE sessions SET status = 'completed' WHERE id = ?").run(req.params.id);
+      })();
       res.json({ success: true });
     } catch (err: any) {
-      console.error("Report generation error:", err);
       const status = err.message === "Session not found" || err.message === "User not found" ? 404 : 400;
       res.status(status).json({ error: err.message });
     }
@@ -370,31 +279,34 @@ async function startServer() {
 
         if (!targetSessionId || !targetUser) return;
 
-        (async () => {
-          try {
-            const sessionExists = await dbQuery.get("SELECT 1 FROM sessions WHERE id = ?", [targetSessionId]);
-            if (!sessionExists) return;
+        try {
+          const sessionExists = db.prepare("SELECT 1 FROM sessions WHERE id = ?").get(targetSessionId);
+          if (!sessionExists) return;
 
-            // Use null for user_id if it's a virtual/AI user (id <= 0) to avoid foreign key constraint failures
-            const dbUserId = (!targetUser.id || targetUser.id <= 0) ? null : targetUser.id;
+          // Use null for user_id if it's a virtual/AI user (id <= 0) to avoid foreign key constraint failures
+          const dbUserId = (!targetUser.id || targetUser.id <= 0) ? null : targetUser.id;
 
-            const info = await dbQuery.run("INSERT INTO transcripts (session_id, user_id, username, text, sentiment) VALUES (?, ?, ?, ?, ?)", 
-              [targetSessionId, dbUserId, targetUser.username, text, sentiment]);
-            
-            broadcast(targetSessionId, {
-              type: "transcript",
-              id: info.lastInsertRowid,
-              user: targetUser,
-              username: targetUser.username,
-              text,
-              sentiment,
-              audio: message.audio,
-              timestamp: new Date().toISOString()
-            });
-          } catch (err: any) {
-            console.error("Transcript save error:", err);
+          const info = db.prepare("INSERT INTO transcripts (session_id, user_id, username, text, sentiment) VALUES (?, ?, ?, ?, ?)")
+            .run(targetSessionId, dbUserId, targetUser.username, text, sentiment);
+          
+          broadcast(targetSessionId, {
+            type: "transcript",
+            id: info.lastInsertRowid,
+            user: targetUser,
+            username: targetUser.username,
+            text,
+            sentiment,
+            audio: message.audio,
+            timestamp: new Date().toISOString()
+          });
+        } catch (err: any) {
+          // Ignore foreign key errors as they are likely due to race conditions with session deletion
+          if (err.code === 'SQLITE_CONSTRAINT_FOREIGNKEY') {
+            console.warn("Foreign key constraint failed for transcript (likely session deleted):", err.message);
+            return;
           }
-        })();
+          console.error("Transcript save error:", err);
+        }
       }
     });
 
@@ -436,19 +348,10 @@ async function startServer() {
     });
   }
 
-  const PORT = parseInt(process.env.PORT || "3000");
+  const PORT = process.env.PORT || 3000;
   server.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
   });
 }
-
-// Add global error handlers to prevent crashing
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-});
 
 startServer();

@@ -1178,12 +1178,6 @@ function DiscussionRoom({ user, session, onLeave, onFinish, logout }: { user: Us
   const isPlayingQueueRef = useRef<boolean>(false);
   const audioContextRef = useRef<AudioContext | null>(0 as any); // Initialize with 0 to detect first run
 
-  useEffect(() => {
-    isRecordingRef.current = isRecording;
-  }, [isRecording]);
-
-  const [lastTranscriptIdRef] = useState(() => ({ current: null })); // For future server-side ID tracking
-
   const processAudioQueue = async () => {
     if (isPlayingQueueRef.current || audioQueueRef.current.length === 0) return;
     
@@ -1336,9 +1330,8 @@ function DiscussionRoom({ user, session, onLeave, onFinish, logout }: { user: Us
     };
   }, [isStarted, aiEnabled]);
 
-  const handleGesture = async () => {
-    console.log("Handling user gesture for audio/speech...");
-    try {
+  useEffect(() => {
+    const handleGesture = async () => {
       // Initialize or resume AudioContext on user gesture
       if (!audioContextRef.current || (audioContextRef.current as any) === 0) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
@@ -1352,15 +1345,12 @@ function DiscussionRoom({ user, session, onLeave, onFinish, logout }: { user: Us
       setNeedsGesture(false);
 
       if (isRecordingRef.current && recognitionRef.current) {
+        // Reset index on restart to avoid skipping results
         lastResultIndexRef.current = -1;
         safeStartRecognition();
       }
-    } catch (err) {
-      console.error("Gesture handler failed:", err);
-    }
-  };
-
-  useEffect(() => {
+    };
+    
     if (needsGesture) {
       window.addEventListener('click', handleGesture, { once: true });
       window.addEventListener('touchstart', handleGesture, { once: true });
@@ -1513,25 +1503,16 @@ function DiscussionRoom({ user, session, onLeave, onFinish, logout }: { user: Us
       };
       recognition.lang = langMap[session.language || 'English'] || 'en-US';
 
-      recognition.onstart = () => {
-        console.log("Speech recognition session started");
-        setIsRecording(true);
-        isRecordingRef.current = true;
-      };
-
       recognition.onresult = async (event: any) => {
         let interimTranscript = '';
         let finalTranscript = '';
 
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           if (event.results[i].isFinal) {
-            // Only process this index if we haven't processed it as final already in this session
+            // Only process this index if we haven't sent it as a final result yet
             if (i > lastResultIndexRef.current) {
-              const transcript = event.results[i][0].transcript;
-              if (transcript.trim()) {
-                finalTranscript += transcript;
-                lastResultIndexRef.current = i;
-              }
+              finalTranscript += event.results[i][0].transcript;
+              lastResultIndexRef.current = i;
             }
           } else {
             interimTranscript += event.results[i][0].transcript;
@@ -1540,38 +1521,39 @@ function DiscussionRoom({ user, session, onLeave, onFinish, logout }: { user: Us
 
         if (interimTranscript) {
           setLocalInterim(interimTranscript);
-          // Show active speaker indicator for self when speaking
-          if (!activeSpeaker) {
-            setActiveSpeaker(user.username);
-            setTimeout(() => setActiveSpeaker(null), 1000);
-          }
         }
 
         if (finalTranscript.trim()) {
-          setLocalInterim(''); 
+          setLocalInterim(''); // Clear interim when we get a final result
           const text = finalTranscript.trim();
-          console.log("Final transcript detected:", text);
-          
+          if (!text) return;
           const now = Date.now();
           
-          // Enhanced duplicate filtering
-          const isDuplicate = recentTranscriptsRef.current.some(prev => prev === text || prev.includes(text));
+          // Enhanced duplicate filtering:
+          // 1. Check if this text is a substring of any very recent transcript (last 5 seconds)
+          const isDuplicate = recentTranscriptsRef.current.some(prev => {
+            return prev.includes(text); // Only skip if the NEW one is already contained in an OLD one
+          });
 
-          if (isDuplicate && (now - lastSentTimeRef.current < 4000)) {
-            console.log("Filtered duplicate final transcript:", text);
+          if (isDuplicate && (now - lastSentTimeRef.current < 3000)) {
+            console.log("Filtered duplicate transcript:", text);
             return;
           }
+          
+          // 2. If it's exactly the same as the last one within a short time, skip.
+          if (text === lastSentTranscriptRef.current && (now - lastSentTimeRef.current < 3000)) return;
           
           lastSentTranscriptRef.current = text;
           lastSentTimeRef.current = now;
           
-          recentTranscriptsRef.current = [text, ...recentTranscriptsRef.current.slice(0, 10)];
+          // Update recent transcripts buffer
+          recentTranscriptsRef.current = [text, ...recentTranscriptsRef.current.slice(0, 5)];
 
+          // Pre-generate audio for own speech to make it immediate for others
           const myVoice = userVoicesRef.current[user.username] || AVAILABLE_VOICES[0];
           const myAudio = await generateAudio(text, myVoice);
 
           if (ws.readyState === WebSocket.OPEN) {
-            console.log("Sending transcript to server:", text);
             ws.send(JSON.stringify({ 
               type: 'transcript', 
               text, 
@@ -1781,18 +1763,12 @@ function DiscussionRoom({ user, session, onLeave, onFinish, logout }: { user: Us
             </span>
             {audioStatus !== 'active' && (
               <button 
-                onClick={handleGesture}
-                className="ml-1 p-1 hover:bg-white/10 rounded text-amber-400"
-                title="Enable Audio & Transcription"
+                onClick={() => setNeedsGesture(true)}
+                className="ml-1 p-1 hover:bg-white/10 rounded text-white"
+                title="Enable Audio"
               >
                 <Play className="w-3 h-3" />
               </button>
-            )}
-            {isRecording && (
-              <div className="flex items-center gap-1 ml-2 border-l border-white/10 pl-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-[9px] text-red-500 font-bold uppercase">Rec</span>
-              </div>
             )}
           </div>
           <div className="flex items-center gap-1.5">
@@ -1873,13 +1849,13 @@ function DiscussionRoom({ user, session, onLeave, onFinish, logout }: { user: Us
           )}
           {transcripts.length > 0 || localInterim ? (
             [...transcripts].reverse().map((t, i) => (
-              <div key={t.id || `transcript-${i}`} className="flex gap-2">
+              <div key={i} className="flex gap-2">
                 <span className="font-bold text-white/60 min-w-[100px]">{t.username}:</span>
                 <span className="text-white/80 not-italic">{t.text}</span>
               </div>
             ))
           ) : (
-            <p>{isRecording ? 'Listening for speech...' : 'Microphone is off. Click the mic icon below to speak.'}</p>
+            <p>Listening for speech...</p>
           )}
         </div>
       </Card>

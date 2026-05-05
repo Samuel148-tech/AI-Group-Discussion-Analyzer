@@ -5,7 +5,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export async function generateAudio(text: string, voiceName: string): Promise<string> {
   const trimmedText = text.trim();
-  if (!trimmedText || trimmedText.length < 2) return ""; // Ignore very short/empty strings for TTS
+  if (!trimmedText) return "";
 
   let attempts = 0;
   const maxAttempts = 2;
@@ -13,8 +13,8 @@ export async function generateAudio(text: string, voiceName: string): Promise<st
   while (attempts < maxAttempts) {
     try {
       const response = await ai.models.generateContent({
-        model: "gemini-3.1-flash-tts-preview",
-        contents: [{ parts: [{ text: `Say: ${trimmedText}` }] }],
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text: trimmedText }] }],
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
@@ -43,12 +43,6 @@ export async function generateAudio(text: string, voiceName: string): Promise<st
       const message = error?.message || (error as any)?.error?.message;
 
       console.error(`TTS Attempt ${attempts + 1} failed: ${status} (${code}) - ${message}`);
-
-      // Handle 400 specifically - might be a prompt issue
-      if (code === 400 || status === "INVALID_ARGUMENT") {
-        console.warn("TTS 400 error, likely prompt rejection or model issue. Skipping.");
-        break;
-      }
 
       // Retry on 429 (Quota) or 500 (Internal)
       if ((code === 429 || code === 500 || status === "RESOURCE_EXHAUSTED" || status === "INTERNAL") && attempts < maxAttempts - 1) {
