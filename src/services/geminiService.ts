@@ -5,7 +5,7 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export async function generateAudio(text: string, voiceName: string): Promise<string> {
   const trimmedText = text.trim();
-  if (!trimmedText) return "";
+  if (!trimmedText || !process.env.GEMINI_API_KEY) return "";
 
   let attempts = 0;
   const maxAttempts = 2;
@@ -34,8 +34,11 @@ export async function generateAudio(text: string, voiceName: string): Promise<st
       attempts++;
       if (attempts < maxAttempts) await new Promise(r => setTimeout(r, 1000));
     } catch (error: any) {
-      console.error(`TTS failed:`, error);
-      break;
+      console.error(`TTS failed (Attempt ${attempts + 1}):`, error);
+      if (error?.message?.includes('quota') || error?.message?.includes('429')) {
+        break; // Don't retry on quota
+      }
+      attempts++;
     }
   }
 
@@ -44,11 +47,11 @@ export async function generateAudio(text: string, voiceName: string): Promise<st
 
 export async function analyzeTranscript(text: string, topic: string, title?: string): Promise<AnalysisResult> {
   if (!process.env.GEMINI_API_KEY) {
-      throw new Error("GEMINI_API_KEY is not set. Please ensure it is configured in your environment.");
+      throw new Error("GEMINI_API_KEY is not set. Please ensure it is configured in your environment secrets.");
   }
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: `Analyze the following transcript excerpt from a group discussion titled "${title || topic}" about the topic "${topic}".
     Transcript: "${text}"`,
     config: {
@@ -89,9 +92,13 @@ export async function analyzeTranscript(text: string, topic: string, title?: str
 }
 
 export async function getAIParticipantResponse(context: string, topic: string, botName: string = "AI Participant"): Promise<string> {
+  if (!process.env.GEMINI_API_KEY) {
+    return "I'm listening, but I can't think of a response without an API key!";
+  }
+
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
+      model: "gemini-flash-latest",
       contents: `You are "${botName}", an AI participant in a group discussion about "${topic}". 
       The discussion context is: "${context}"
       
@@ -106,23 +113,36 @@ export async function getAIParticipantResponse(context: string, topic: string, b
       }
     });
     const text = response.text?.trim() || "";
-    return text || "I agree with that perspective. Let's explore it further.";
-  } catch (error) {
+    return text || "I see what you mean. That's a point worth considering.";
+  } catch (error: any) {
     console.error("AI Response Error:", error);
-    return "That's a valid observation. I'd be interested to hear more thoughts on this.";
+    const fallbacks = [
+      "That's an interesting point you raised.",
+      "I'm following the conversation closely.",
+      "Could you elaborate more on that?",
+      "I agree, it's a complex topic with many angles.",
+      "That's a valid observation. Let's hear more thoughts on this."
+    ];
+    // Return a random fallback to prevent exact repetition if API fails
+    return fallbacks[Math.floor(Math.random() * fallbacks.length)];
   }
 }
 
 export async function analyzeSentiment(text: string): Promise<'Positive' | 'Neutral' | 'Negative'> {
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: `Analyze the sentiment of this text and return ONLY one word: Positive, Neutral, or Negative.\nText: "${text}"`,
-  });
-  
-  const result = response.text?.trim().toLowerCase();
-  if (result?.includes('positive')) return 'Positive';
-  if (result?.includes('negative')) return 'Negative';
-  return 'Neutral';
+  if (!process.env.GEMINI_API_KEY) return 'Neutral';
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-flash-latest",
+      contents: `Analyze the sentiment of this text and return ONLY one word: Positive, Neutral, or Negative.\nText: "${text}"`,
+    });
+    
+    const result = response.text?.trim().toLowerCase();
+    if (result?.includes('positive')) return 'Positive';
+    if (result?.includes('negative')) return 'Negative';
+    return 'Neutral';
+  } catch {
+    return 'Neutral';
+  }
 }
 
 export async function analyzeSessionMetrics(
@@ -130,6 +150,9 @@ export async function analyzeSessionMetrics(
   transcripts: TranscriptSegment[],
   participants: Participant[]
 ): Promise<SessionMetrics> {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new Error("GEMINI_API_KEY missing");
+  }
   const transcriptText = transcripts.map(t => {
     const p = participants.find(p => p.id === t.participantId);
     return `${p?.name || 'Unknown'}: ${t.text}`;
@@ -156,7 +179,7 @@ export async function analyzeSessionMetrics(
   `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-flash-latest",
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -204,7 +227,7 @@ export async function analyzeSessionMetrics(
     const mappedParticipantMetrics: Record<string, any> = {};
     participants.forEach(p => {
       // Find matching name in data.participantMetrics, or default
-      const pData = data.participantMetrics[p.name] || {
+      const pData = (data.participantMetrics && data.participantMetrics[p.name]) || {
         speakingDuration: 0,
         wordCount: 0,
         confidence: 0,
@@ -215,12 +238,16 @@ export async function analyzeSessionMetrics(
     });
 
     return {
-      ...data,
+      topicRelevance: data.topicRelevance || 0,
+      coherence: data.coherence || 0,
+      fillerWords: data.fillerWords || 0,
+      vocabularyRichness: data.vocabularyRichness || 0,
+      sentimentDistribution: data.sentimentDistribution || { positive: 0, neutral: 100, negative: 0 },
       participantMetrics: mappedParticipantMetrics
     };
   } catch (e) {
     console.error("Failed to parse metrics", e);
-    throw new Error("Failed to analyze metrics");
+    throw new Error("Failed to analyze metrics. The discussion might be too short.");
   }
 }
 
@@ -229,6 +256,8 @@ export async function generateAIResponse(
   transcripts: TranscriptSegment[],
   participants: Participant[]
 ): Promise<string> {
+  if (!process.env.GEMINI_API_KEY) return "I agree with the points made.";
+  
   const transcriptText = transcripts.map(t => {
     const p = participants.find(p => p.id === t.participantId);
     return `${p?.name || 'Unknown'}: ${t.text}`;
@@ -245,10 +274,14 @@ export async function generateAIResponse(
     Keep it under 3 sentences. Do not include your name in the output, just the spoken text.
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: prompt,
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: "gemini-flash-latest",
+      contents: prompt,
+    });
 
-  return response.text || "I agree with the points made so far.";
+    return response.text?.trim() || "I agree with the points made so far.";
+  } catch {
+    return "That's an interesting point. Let's keep exploring this.";
+  }
 }
