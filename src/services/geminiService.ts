@@ -4,128 +4,55 @@ import { AnalysisResult, SessionConfig, TranscriptSegment, Participant, SessionM
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export async function generateAudio(text: string, voiceName: string): Promise<string> {
-  const trimmedText = text.trim();
-  if (!trimmedText) return "";
-
-  let attempts = 0;
-  const maxAttempts = 2;
-
-  while (attempts < maxAttempts) {
-    try {
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash-preview-tts",
-        contents: [{ parts: [{ text: trimmedText }] }],
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: voiceName as any },
-            },
-          },
-        },
-      });
-
-      const part = response.candidates?.[0]?.content?.parts?.[0];
-      
-      if (part?.inlineData?.data) {
-        return part.inlineData.data;
-      }
-      
-      if (part?.text) {
-        console.warn("TTS model returned text instead of audio:", part.text);
-      }
-
-      attempts++;
-      if (attempts < maxAttempts) await new Promise(r => setTimeout(r, 1000));
-    } catch (error: any) {
-      const status = error?.status || (error as any)?.error?.status;
-      const code = error?.code || (error as any)?.error?.code;
-      const message = error?.message || (error as any)?.error?.message;
-
-      console.error(`TTS Attempt ${attempts + 1} failed: ${status} (${code}) - ${message}`);
-
-      // Retry on 429 (Quota) or 500 (Internal)
-      if ((code === 429 || code === 500 || status === "RESOURCE_EXHAUSTED" || status === "INTERNAL") && attempts < maxAttempts - 1) {
-        attempts++;
-        const delay = (code === 429 || status === "RESOURCE_EXHAUSTED") ? 2000 : 1000;
-        await new Promise(r => setTimeout(r, delay));
-        continue;
-      }
-
-      break;
-    }
+  try {
+    const res = await fetch("/api/ai/audio", {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
+      },
+      body: JSON.stringify({ text, voiceName })
+    });
+    if (!res.ok) return "";
+    const data = await res.json();
+    return data.audio || "";
+  } catch (err) {
+    console.error("Client TTS error:", err);
+    return "";
   }
-
-  return "";
 }
 
 export async function analyzeTranscript(text: string, topic: string, title?: string): Promise<AnalysisResult> {
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: `Analyze the following transcript excerpt from a group discussion titled "${title || topic}" about the topic "${topic}".
-    Transcript: "${text}"`,
-    config: {
-      systemInstruction: "You are an expert NLP analyzer for group discussions. Provide a detailed analysis in JSON format.",
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          relevanceScore: { type: Type.NUMBER, description: "0-100 score of how relevant the text is to the topic" },
-          coherenceScore: { type: Type.NUMBER, description: "0-100 score of logical flow and structural integrity" },
-          vocabularyRichness: { type: Type.NUMBER, description: "0-100 score of lexical diversity and complexity" },
-          fillerWordCount: { type: Type.INTEGER, description: "Count of filler words like 'um', 'ah', 'like', 'you know'" },
-          fluencyScore: { type: Type.NUMBER, description: "0-100 score of speaking flow and rhythm" },
-          sentiment: { type: Type.STRING, enum: ["Positive", "Neutral", "Negative"] },
-          confidence: { type: Type.NUMBER, description: "0-100 score of perceived confidence and vocal presence" },
-          assertiveness: { type: Type.NUMBER, description: "0-100 score of assertiveness and leadership" },
-          politeness: { type: Type.NUMBER, description: "0-100 score of politeness and cooperative tone" },
-          summary: { type: Type.STRING, description: "A concise behavioral summary of the participant's contribution" },
-          suggestions: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Personalized improvement recommendations" },
-          sentimentTrend: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                time: { type: Type.STRING, description: "Time point (e.g., 'Start', 'Middle', 'End')" },
-                score: { type: Type.NUMBER, description: "Sentiment score at this point (0-100)" }
-              },
-              required: ["time", "score"]
-            },
-            description: "Temporal sentiment trends throughout the discussion"
-          }
-        },
-        required: ["relevanceScore", "coherenceScore", "vocabularyRichness", "fillerWordCount", "fluencyScore", "sentiment", "confidence", "assertiveness", "politeness", "summary", "suggestions", "sentimentTrend"]
-      }
-    }
+  const res = await fetch("/api/ai/analyze", {
+    method: "POST",
+    headers: { 
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${localStorage.getItem("token")}`
+    },
+    body: JSON.stringify({ text, topic, title })
   });
-
-  return JSON.parse(response.text || "{}");
+  if (!res.ok) {
+    const errorData = await res.json();
+    throw new Error(errorData.error || "Analysis failed");
+  }
+  return await res.json();
 }
 
 export async function getAIParticipantResponse(context: string, topic: string, botName: string = "AI Participant"): Promise<string> {
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `You are "${botName}", an AI participant in a group discussion about "${topic}". 
-      The discussion context is: "${context}"
-      
-      Your role is to:
-      1. Acknowledge the points made by others.
-      2. Share your unique perspective or ask a relevant question.
-      3. Keep the conversation natural and engaging.
-      
-      Provide a brief, natural response (under 30 words). Do not include your name in the response.`,
-      config: {
-        systemInstruction: `You are ${botName}, a helpful and insightful AI participant. Your goal is to contribute meaningfully to the discussion while keeping it flowing.`
-      }
+    const res = await fetch("/api/ai/response", {
+      method: "POST",
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${localStorage.getItem("token")}`
+      },
+      body: JSON.stringify({ context, topic, botName })
     });
-    const text = response.text?.trim() || "";
-    if (text.toLowerCase().includes("i cannot") || text.toLowerCase().includes("i'm sorry")) {
-      return "That's an interesting point. How would everyone else describe this situation?";
-    }
-    return text || "I agree with that perspective. Let's explore it further.";
-  } catch (error) {
-    console.error("AI Response Error:", error);
+    if (!res.ok) throw new Error("AI response failed");
+    const data = await res.json();
+    return data.response;
+  } catch (err) {
+    console.error("Client AI response error:", err);
     return "That's a valid observation. I'd be interested to hear more thoughts on this.";
   }
 }
