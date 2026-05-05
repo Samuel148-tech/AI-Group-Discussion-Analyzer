@@ -4,55 +4,111 @@ import { AnalysisResult, SessionConfig, TranscriptSegment, Participant, SessionM
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 export async function generateAudio(text: string, voiceName: string): Promise<string> {
-  try {
-    const res = await fetch("/api/ai/audio", {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${localStorage.getItem("token")}`
-      },
-      body: JSON.stringify({ text, voiceName })
-    });
-    if (!res.ok) return "";
-    const data = await res.json();
-    return data.audio || "";
-  } catch (err) {
-    console.error("Client TTS error:", err);
-    return "";
+  const trimmedText = text.trim();
+  if (!trimmedText) return "";
+
+  let attempts = 0;
+  const maxAttempts = 2;
+
+  while (attempts < maxAttempts) {
+    try {
+      const response = await ai.models.generateContent({
+        model: "gemini-3.1-flash-tts-preview",
+        contents: [{ parts: [{ text: trimmedText }] }],
+        config: {
+          responseModalities: [Modality.AUDIO],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: voiceName as any },
+            },
+          },
+        },
+      });
+
+      const part = response.candidates?.[0]?.content?.parts?.[0];
+      
+      if (part?.inlineData?.data) {
+        return part.inlineData.data;
+      }
+      
+      attempts++;
+      if (attempts < maxAttempts) await new Promise(r => setTimeout(r, 1000));
+    } catch (error: any) {
+      console.error(`TTS failed:`, error);
+      break;
+    }
   }
+
+  return "";
 }
 
 export async function analyzeTranscript(text: string, topic: string, title?: string): Promise<AnalysisResult> {
-  const res = await fetch("/api/ai/analyze", {
-    method: "POST",
-    headers: { 
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${localStorage.getItem("token")}`
-    },
-    body: JSON.stringify({ text, topic, title })
-  });
-  if (!res.ok) {
-    const errorData = await res.json();
-    throw new Error(errorData.error || "Analysis failed");
+  if (!process.env.GEMINI_API_KEY) {
+      throw new Error("GEMINI_API_KEY is not set. Please ensure it is configured in your environment.");
   }
-  return await res.json();
+
+  const response = await ai.models.generateContent({
+    model: "gemini-3-flash-preview",
+    contents: `Analyze the following transcript excerpt from a group discussion titled "${title || topic}" about the topic "${topic}".
+    Transcript: "${text}"`,
+    config: {
+      systemInstruction: "You are an expert NLP analyzer for group discussions. Provide a detailed analysis in JSON format.",
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          relevanceScore: { type: Type.NUMBER },
+          coherenceScore: { type: Type.NUMBER },
+          vocabularyRichness: { type: Type.NUMBER },
+          fillerWordCount: { type: Type.INTEGER },
+          fluencyScore: { type: Type.NUMBER },
+          sentiment: { type: Type.STRING, enum: ["Positive", "Neutral", "Negative"] },
+          confidence: { type: Type.NUMBER },
+          assertiveness: { type: Type.NUMBER },
+          politeness: { type: Type.NUMBER },
+          summary: { type: Type.STRING },
+          suggestions: { type: Type.ARRAY, items: { type: Type.STRING } },
+          sentimentTrend: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                time: { type: Type.STRING },
+                score: { type: Type.NUMBER }
+              },
+              required: ["time", "score"]
+            }
+          }
+        },
+        required: ["relevanceScore", "coherenceScore", "vocabularyRichness", "fillerWordCount", "fluencyScore", "sentiment", "confidence", "assertiveness", "politeness", "summary", "suggestions", "sentimentTrend"]
+      }
+    }
+  });
+
+  return JSON.parse(response.text || "{}");
 }
 
 export async function getAIParticipantResponse(context: string, topic: string, botName: string = "AI Participant"): Promise<string> {
   try {
-    const res = await fetch("/api/ai/response", {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${localStorage.getItem("token")}`
-      },
-      body: JSON.stringify({ context, topic, botName })
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: `You are "${botName}", an AI participant in a group discussion about "${topic}". 
+      The discussion context is: "${context}"
+      
+      Your role is to:
+      1. Acknowledge the points made by others.
+      2. Share your unique perspective or ask a relevant question.
+      3. Keep the conversation natural and engaging.
+      
+      Provide a brief, natural response (under 30 words). Do not include your name in the response.`,
+      config: {
+        systemInstruction: `You are ${botName}, a helpful and insightful AI participant. Your goal is to contribute meaningfully to the discussion while keeping it flowing.`
+      }
     });
-    if (!res.ok) throw new Error("AI response failed");
-    const data = await res.json();
-    return data.response;
-  } catch (err) {
-    console.error("Client AI response error:", err);
+    const text = response.text?.trim() || "";
+    return text || "I agree with that perspective. Let's explore it further.";
+  } catch (error) {
+    console.error("AI Response Error:", error);
     return "That's a valid observation. I'd be interested to hear more thoughts on this.";
   }
 }
@@ -69,7 +125,6 @@ export async function analyzeSentiment(text: string): Promise<'Positive' | 'Neut
   return 'Neutral';
 }
 
-// Keep the new functions if they are used elsewhere
 export async function analyzeSessionMetrics(
   config: SessionConfig,
   transcripts: TranscriptSegment[],

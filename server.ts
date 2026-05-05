@@ -68,7 +68,6 @@ db.exec(`
   );
 `);
 
-import { analyzeTranscriptBackend, generateAudioBackend, getAIParticipantResponseBackend } from "./ai_service.js";
 
 async function startServer() {
   const app = express();
@@ -93,40 +92,6 @@ async function startServer() {
       res.status(401).json({ error: "Invalid token" });
     }
   };
-
-  // Proxy AI Routes
-  app.post("/api/ai/analyze", authenticate, async (req, res) => {
-    try {
-      const { text, topic, title } = req.body;
-      const result = await analyzeTranscriptBackend(text, topic, title);
-      res.json(result);
-    } catch (err: any) {
-      console.error("Analysis proxy error:", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.post("/api/ai/audio", authenticate, async (req, res) => {
-    try {
-      const { text, voiceName } = req.body;
-      const audio = await generateAudioBackend(text, voiceName);
-      res.json({ audio });
-    } catch (err: any) {
-      console.error("TTS proxy error:", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  app.post("/api/ai/response", authenticate, async (req, res) => {
-    try {
-      const { context, topic, botName } = req.body;
-      const response = await getAIParticipantResponseBackend(context, topic, botName);
-      res.json({ response });
-    } catch (err: any) {
-      console.error("AI response proxy error:", err);
-      res.status(500).json({ error: err.message });
-    }
-  });
 
   // Auth Routes
   app.post("/api/auth/register", async (req, res) => {
